@@ -30,6 +30,39 @@ async function run() {
     const db = client.db("city-fix-db");
     const citizenCollection = db.collection("Citezen");
 
+    //citizen api
+    app.get("/citizen", async (req, res) => {
+      const query = {};
+
+      const { email } = req.query;
+
+      if (email) {
+        query.email = email;
+      }
+
+      const cursor = citizenCollection.find(query);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    app.post("/citizen", async (req, res) => {
+      const { title, description, image, category, location, email } = req.body;
+
+      const issus = {
+        title,
+        description,
+        category,
+        location,
+        image,
+        email,
+        status: "pending",
+        createdAt: new Date(),
+      };
+
+      const result = await citizenCollection.insertOne(issus);
+      res.send(result);
+    });
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
