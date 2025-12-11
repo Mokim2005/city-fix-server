@@ -194,6 +194,8 @@ async function run() {
           cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
         });
 
+    
+
         res.json({ url: session.url });
       } catch (err) {
         console.log(err);
@@ -205,195 +207,41 @@ async function run() {
       try {
         const { sessionId } = req.body;
 
-        if (!sessionId) {
-          return res.status(400).send({
-            success: false,
-            message: "sessionId missing",
-          });
-        }
-
         const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-        // Payment verified
-        if (session.payment_status === "paid") {
-          const orderInfo = {
-            transactionId: session.payment_intent,
-            customer: session.customer_details.email,
-            amount: session.amount_total / 100,
-            amount_bdt: session.metadata.amount_bdt,
-            plan: session.metadata.plan,
-            status: "completed",
-          };
-
-          console.log("Saving to DB:", orderInfo);
-
-          const result = await subscribeCollection.insertOne(orderInfo);
-          // Example: save to mongo
-          // await OrderCollection.insertOne(orderInfo);
+        if (session.payment_status !== "paid") {
+          return res.send({ success: false, message: "Payment not completed" });
         }
 
-        res.send({
-          success: true,
-          session,
-        });
+        // Update user premium
+        await userCollection.updateOne(
+          { email: session.customer_details.email },
+          {
+            $set: {
+              isPremium: true,
+              premiumDate: new Date(),
+            },
+          }
+        );
+
+        // Save order in DB
+        const orderInfo = {
+          transactionId: session.payment_intent,
+          email: session.customer_details.email,
+          amount_usd: session.amount_total / 100,
+          amount_bdt: session.metadata.amount_bdt,
+          plan: session.metadata.plan,
+          status: "completed",
+        };
+
+        await subscribeCollection.insertOne(orderInfo);
+
+        res.send({ success: true });
       } catch (error) {
-        console.log("Payment success error:", error);
-        res.status(500).send({
-          success: false,
-          message: error.message,
-        });
+        res.status(500).send({ error: error.message });
       }
     });
 
-    // app.post("/payment-success", async (req, res) => {
-    //   const { sessionId } = req.body;
-    //   const session = await stripe.checkout.session.retrieve(sessionId)
-    //   console.log(session)
-    // });
-
-    // const { ObjectId } = require("mongodb");
-
-    // app.patch("/payment-success", async (req, res) => {
-    //   console.log("route hit");
-    //   console.log("session_id:", req.query.session_id);
-
-    //   try {
-    //     const session = await stripe.checkout.sessions.retrieve(
-    //       req.query.session_id
-    //     );
-    //     console.log("stripe session:", session);
-    //   } catch (err) {
-    //     console.log("stripe error:", err);
-    //     return res.send({ success: false, error: "Invalid session id" });
-    //   }
-    //   try {
-    //     const sessionId = req.query.session_id;
-    //     if (!sessionId) {
-    //       return res
-    //         .status(400)
-    //         .send({ success: false, message: "session_id missing" });
-    //     }
-
-    //     // 1) Retrieve the Stripe session
-    //     const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    //     // 2) Basic session data
-    //     const transactionId = session.payment_intent;
-    //     const paymentStatus = session.payment_status; // "paid" expected
-    //     const customerEmail =
-    //       session.customer_email ||
-    //       session.customer_details?.email ||
-    //       session.metadata?.email;
-    //     const customerName =
-    //       session.metadata?.name || session.customer_details?.name || "Unknown";
-    //     const amount = session.amount_total ? session.amount_total / 100 : null;
-    //     const plan = session.metadata?.plan || "premium";
-
-    //     // 3) Check if payment already logged
-    //     const paymentExist = await paymentCollection.findOne({ transactionId });
-    //     if (paymentExist) {
-    //       return res.send({
-    //         success: true,
-    //         message: "already exists",
-    //         transactionId,
-    //         paymentInfo: paymentExist,
-    //       });
-    //     }
-
-    //     // 4) Only proceed if paid
-    //     if (paymentStatus === "paid") {
-    //       // Update subscribeCollection: mark that subscription request is paid
-    //       // Try to match by sessionId or by email + plan if you didn't save subscribe doc with sessionId
-    //       const subscribeQuery = session.metadata?.subscribeId
-    //         ? { _id: new ObjectId(session.metadata.subscribeId) }
-    //         : { email: customerEmail, plan };
-
-    //       const subscribeUpdate = {
-    //         $set: {
-    //           isPremium: true,
-    //           sessionId,
-    //           transactionId,
-    //           paidAt: new Date(),
-    //           amount,
-    //         },
-    //       };
-
-    //       const updateSubscribeResult = await subscribeCollection.updateOne(
-    //         subscribeQuery,
-    //         subscribeUpdate
-    //       );
-
-    //       // If subscribe doc didn't exist, optionally create one
-    //       if (updateSubscribeResult.matchedCount === 0) {
-    //         await subscribeCollection.insertOne({
-    //           sessionId,
-    //           transactionId,
-    //           email: customerEmail,
-    //           name: customerName,
-    //           plan,
-    //           amount,
-    //           isPremium: true,
-    //           createdAt: new Date(),
-    //           paidAt: new Date(),
-    //         });
-    //       }
-
-    //       // 5) Update user document to set isPremium = true
-    //       if (customerEmail) {
-    //         await userCollection.updateOne(
-    //           { email: customerEmail },
-    //           {
-    //             $set: {
-    //               isPremium: true,
-    //               premiumTakenAt: new Date(),
-    //               transactionId,
-    //               plan,
-    //             },
-    //           }
-    //         );
-    //       }
-
-    //       // 6) Insert into paymentCollection (log)
-    //       const paymentLog = {
-    //         transactionId,
-    //         sessionId,
-    //         amount,
-    //         currency: session.currency,
-    //         customerEmail,
-    //         customerName,
-    //         plan,
-    //         paymentStatus,
-    //         paidAt: new Date(),
-    //         rawSession: session, // optional: store full session for debugging (careful with size)
-    //       };
-
-    //       const insertedPayment = await paymentCollection.insertOne(paymentLog);
-
-    //       // 7) Respond success
-    //       return res.send({
-    //         success: true,
-    //         message: "Payment verified and premium activated",
-    //         transactionId: transactionId,
-    //         email: customerEmail,
-    //         amount: amount,
-    //         plan: plan,
-    //         isPremium: true,
-    //       });
-    //     }
-
-    //     // If not paid
-    //     return res
-    //       .status(400)
-    //       .send({ success: false, message: "Payment not completed" });
-    //   } catch (error) {
-    //     console.error("payment-success error:", error);
-    //     return res.status(500).send({
-    //       success: false,
-    //       message: "Server error",
-    //       error: error.message,
-    //     });
-    //   }
-    // });
 
     // ping
     await client.db("admin").command({ ping: 1 });
