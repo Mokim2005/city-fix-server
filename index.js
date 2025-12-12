@@ -52,6 +52,11 @@ async function run() {
       const result = await cursor.toArray();
       res.send(result);
     });
+    app.get("/issus/:id", async (req, res) => {
+      const id = req.params.id;
+      const issue = await reportCollection.findOne({ _id: new ObjectId(id) });
+      res.send(issue);
+    });
 
     // Delete report
     app.delete("/issus/:id", async (req, res) => {
@@ -60,6 +65,39 @@ async function run() {
         _id: new ObjectId(id),
       });
       res.send(result);
+    });
+
+    app.patch("/issus/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const updateData = req.body; // title, description, location, category
+
+        // Backend এ check করে দেওয়া ভালো যে, user শুধু নিজের issue edit করতে পারবে
+        const issue = await reportCollection.findOne({ _id: new ObjectId(id) });
+        if (!issue) {
+          return res
+            .status(404)
+            .send({ success: false, message: "Issue not found" });
+        }
+
+        // Optional: Only pending issues editable
+        if (issue.status !== "pending") {
+          return res.status(400).send({
+            success: false,
+            message: "Only pending issues can be edited",
+          });
+        }
+
+        const result = await reportCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        res.send({ success: true, message: "Issue updated successfully" });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ success: false, message: "Server Error" });
+      }
     });
 
     // Create new report
@@ -194,8 +232,6 @@ async function run() {
           cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
         });
 
-    
-
         res.json({ url: session.url });
       } catch (err) {
         console.log(err);
@@ -241,7 +277,6 @@ async function run() {
         res.status(500).send({ error: error.message });
       }
     });
-
 
     // ping
     await client.db("admin").command({ ping: 1 });
