@@ -12,6 +12,25 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET);
 app.use(express.json());
 app.use(cors());
 
+const verifyFBToken = async (req, res, next) => {
+  // console.log("headers in the middleware", req.headers.authorization);
+  const token = req.headers.authorization;
+
+  if (!token) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  try {
+    const idToken = token.split(" ")[1];
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    console.log("decoded id the token", decoded);
+    req.decoded_email = decoded.email;
+    next();
+  } catch (err) {
+    return res.status(401).send({ message: "unauthorize access" });
+  }
+};
+
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ekpzegp.mongodb.net/?appName=Cluster0`;
 
 const client = new MongoClient(uri, {
@@ -35,6 +54,29 @@ async function run() {
     const userCollection = db.collection("users");
     const subscribeCollection = db.collection("subscribe");
 
+    //middl admin before allowing admin activity
+    //must be used verifyFBToken middleware
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded_email;
+      const query = { email };
+      const user = await userCollection.findOne(query);
+
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+    const verifyStuff = async (req, res, next) => {
+      const email = req.decoded_email;
+      const query = { email };
+      const user = await userCollection.findOne(query);
+
+      if (!user || user.role !== "stuff") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
     // -----------------------
     // issus (ISSUES) API
     // -----------------------
@@ -46,16 +88,19 @@ async function run() {
       if (email) query.email = email;
 
       const cursor = reportCollection.find(query).sort({
-        priority: -1, // High আগে আসবে
+        priority: -1, 
         createdAt: -1,
       });
 
       const result = await cursor.toArray();
       res.send(result);
     });
+
+
+
     app.get("/issus/:id", async (req, res) => {
       const id = req.params.id;
-      console.log('this is id',id)
+      console.log("this is id", id);
       const issue = await reportCollection.findOne({ _id: new ObjectId(id) });
       res.send(issue);
     });
@@ -74,7 +119,6 @@ async function run() {
         const id = req.params.id;
         const updateData = req.body;
 
-       
         const issue = await reportCollection.findOne({ _id: new ObjectId(id) });
         if (!issue) {
           return res
@@ -166,7 +210,6 @@ async function run() {
             .send({ success: false, message: "You already upvoted" });
         }
 
-   
         const updateResult = await reportCollection.updateOne(
           { _id: new ObjectId(id) },
           {
@@ -187,7 +230,6 @@ async function run() {
         res.status(500).send({ success: false, message: "Server error" });
       }
     });
-
 
     // app.get("/latest-resolved", async (req, res) => {
     //   try {
@@ -215,7 +257,7 @@ async function run() {
     app.patch("/issus/boost/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        console.log('upvote',id)
+        console.log("upvote", id);
         const result = await reportCollection.updateOne(
           { _id: new ObjectId(id) },
           {
@@ -242,7 +284,7 @@ async function run() {
     app.patch("/issus/status/:id", async (req, res) => {
       const { status } = req.body;
       const id = req.params.id;
-      console.log('status id', id)
+      console.log("status id", id);
       await reportCollection.updateOne(
         { _id: new ObjectId(id) },
         {
@@ -283,7 +325,7 @@ async function run() {
       // Default values
       user.role = "user";
       user.createdAt = new Date();
-      user.isPremium = false; 
+      user.isPremium = false;
 
       console.log("this is user", user);
 
@@ -342,47 +384,54 @@ async function run() {
 
     // Stripe checkout
     app.post("/create-checkout-session", async (req, res) => {
-      const { email, purpose, issueId, plan } = req.body;
-
-      const bdtAmount = purpose === "boost" ? 100 : 1000;
-      const usdAmount = Math.round(bdtAmount / 110);
+      const { email, plan, issueId, purpose } = req.body; // purpose: "subscribe" or "boost"
 
       try {
+        let amountBDT = 0;
+        let productName = "";
+
+        if (purpose === "subscribe") {
+          amountBDT = 1000; // Premium subscription
+          productName = "Premium Subscription";
+        } else if (purpose === "boost") {
+          amountBDT = 100; // Boost issue priority
+          productName = "Issue Priority Boost";
+        } else {
+          return res.status(400).json({ error: "Invalid payment purpose" });
+        }
+
+        const usdAmount = Math.round(amountBDT / 110); // convert to USD
         const session = await stripe.checkout.sessions.create({
           payment_method_types: ["card"],
+          mode: "payment",
+          customer_email: email,
+
           line_items: [
             {
               price_data: {
                 currency: "usd",
                 unit_amount: usdAmount * 100,
                 product_data: {
-                  name:
-                    purpose === "boost"
-                      ? "Issue Priority Boost"
-                      : "Premium Subscription",
+                  name: productName,
                 },
               },
               quantity: 1,
             },
           ],
-          customer_email: email,
-          mode: "payment",
 
-        
           metadata: {
-            purpose, 
-            issueId: issueId || null,
-            plan: plan || null,
-            amount_bdt: bdtAmount,
+            purpose,
+            plan: plan || null, // only for subscription
+            issueId: issueId || null, // only for boost
           },
 
-          success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${process.env.SITE_DOMAIN}/payment-cancelled`,
+          success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
         });
 
         res.json({ url: session.url });
       } catch (err) {
-        console.error(err);
+        console.error("Stripe error:", err);
         res.status(500).json({ error: err.message });
       }
     });
@@ -426,7 +475,7 @@ async function run() {
     //     }
 
     //     //subscribe
-      
+
     //     if (purpose === "subscribe") {
     //       await userCollection.updateOne(
     //         { email: session.customer_details.email },
@@ -461,15 +510,89 @@ async function run() {
     //   }
     // });
 
-      app.patch("/payment-success", async (req, res) => {
-      console.log(req.body)
-    });
+    app.post("/payment-success", async (req, res) => {
+      try {
+        const { sessionId } = req.body;
 
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+        if (session.payment_status !== "paid") {
+          return res.status(400).json({
+            success: false,
+            message: "Payment not completed",
+          });
+        }
+
+        const { purpose, issueId, plan } = session.metadata;
+        const email = session.customer_details.email;
+
+        // 🔥 SUBSCRIPTION LOGIC
+        if (purpose === "subscribe") {
+          await userCollection.updateOne(
+            { email },
+            {
+              $set: {
+                isPremium: true,
+                premiumDate: new Date(),
+              },
+            }
+          );
+
+          await subscribeCollection.insertOne({
+            transactionId: session.payment_intent,
+            email,
+            plan,
+            amount_bdt: session.amount_total / 100,
+            purpose: "subscribe",
+            createdAt: new Date(),
+          });
+
+          return res.json({
+            success: true,
+            purpose: "subscribe",
+          });
+        }
+
+        // 🚀 BOOST LOGIC
+        if (purpose === "boost") {
+          await reportCollection.updateOne(
+            { _id: new ObjectId(issueId) },
+            {
+              $set: {
+                priority: "High",
+                boostedAt: new Date(),
+              },
+            }
+          );
+
+          await subscribeCollection.insertOne({
+            transactionId: session.payment_intent,
+            email,
+            issueId,
+            purpose: "boost",
+            amount_bdt: session.amount_total / 100,
+            createdAt: new Date(),
+          });
+
+          return res.json({
+            success: true,
+            purpose: "boost",
+            issueId,
+          });
+        }
+
+        res
+          .status(400)
+          .json({ success: false, message: "Invalid payment purpose" });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: error.message });
+      }
+    });
     // ping
     await client.db("admin").command({ ping: 1 });
     console.log("Connected to MongoDB successfully!");
   } finally {
-   
   }
 }
 
