@@ -24,7 +24,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
     const db = client.db("city-fix-db");
 
@@ -45,8 +45,9 @@ async function run() {
       const { email } = req.query;
       if (email) query.email = email;
 
-      const cursor = reportCollection.find(query, {
-        sort: { createdAt: -1 },
+      const cursor = reportCollection.find(query).sort({
+        priority: -1, // High আগে আসবে
+        createdAt: -1,
       });
 
       const result = await cursor.toArray();
@@ -54,6 +55,7 @@ async function run() {
     });
     app.get("/issus/:id", async (req, res) => {
       const id = req.params.id;
+      console.log('this is id',id)
       const issue = await reportCollection.findOne({ _id: new ObjectId(id) });
       res.send(issue);
     });
@@ -70,9 +72,9 @@ async function run() {
     app.patch("/issus/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        const updateData = req.body; // title, description, location, category
+        const updateData = req.body;
 
-        // Backend এ check করে দেওয়া ভালো যে, user শুধু নিজের issue edit করতে পারবে
+       
         const issue = await reportCollection.findOne({ _id: new ObjectId(id) });
         if (!issue) {
           return res
@@ -80,7 +82,6 @@ async function run() {
             .send({ success: false, message: "Issue not found" });
         }
 
-        // Optional: Only pending issues editable
         if (issue.status !== "pending") {
           return res.status(400).send({
             success: false,
@@ -112,11 +113,150 @@ async function run() {
         location,
         email,
         status: "pending",
+        priority: "Normal",
+        upvote: 0,
+        upvotedUsers: [],
+        timeline: [
+          {
+            text: "Issue reported",
+            date: new Date(),
+          },
+        ],
         createdAt: new Date(),
       };
 
       const result = await reportCollection.insertOne(reportData);
       res.send(result);
+    });
+
+    app.patch("/issus/upvote/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const userEmail = req.body?.email;
+
+        if (!userEmail) {
+          return res
+            .status(401)
+            .send({ success: false, message: "User email missing" });
+        }
+
+        // 1) Get issue
+        const issue = await reportCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!issue) {
+          return res
+            .status(404)
+            .send({ success: false, message: "Issue not found" });
+        }
+
+        if (issue.email === userEmail) {
+          return res.status(400).send({
+            success: false,
+            message: "You cannot upvote your own issue",
+          });
+        }
+
+        const alreadyUpvoted =
+          Array.isArray(issue.upvotedUsers) &&
+          issue.upvotedUsers.includes(userEmail);
+
+        if (alreadyUpvoted) {
+          return res
+            .status(400)
+            .send({ success: false, message: "You already upvoted" });
+        }
+
+   
+        const updateResult = await reportCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $inc: { upvote: 1 },
+            $addToSet: { upvotedUsers: userEmail },
+          }
+        );
+
+        if (updateResult.modifiedCount > 0) {
+          return res.send({ success: true, message: "Upvoted Successfully!" });
+        }
+
+        return res
+          .status(500)
+          .send({ success: false, message: "Upvote failed" });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ success: false, message: "Server error" });
+      }
+    });
+
+
+    // app.get("/latest-resolved", async (req, res) => {
+    //   try {
+    //     const limit = parseInt(req.query.limit) || 6;
+
+    //     const cursor = reportCollection.find({ status: "resolved" });
+    //     const count = await cursor.count();
+    //     console.log("Total resolved issues:", count);
+
+    //     const latestResolved = await cursor
+    //       .sort({ createdAt: -1 })
+    //       .limit(limit)
+    //       .toArray();
+
+    //     console.log("Fetched issues:", latestResolved.length);
+    //     res.send(latestResolved);
+    //   } catch (err) {
+    //     console.error("Latest Resolved Issues Error:", err);
+    //     res
+    //       .status(500)
+    //       .send({ message: "Failed to fetch latest resolved issues" });
+    //   }
+    // });
+
+    app.patch("/issus/boost/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        console.log('upvote',id)
+        const result = await reportCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: { priority: "High" },
+            $push: {
+              timeline: {
+                text: "Priority boosted",
+                date: new Date(),
+              },
+            },
+          }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res.status(404).send({ message: "Issue not found" });
+        }
+
+        res.send({ success: true, message: "Issue boosted successfully" });
+      } catch (error) {
+        console.error("Boost error:", error);
+        res.status(500).send({ message: "Failed to boost issue" });
+      }
+    });
+    app.patch("/issus/status/:id", async (req, res) => {
+      const { status } = req.body;
+      const id = req.params.id;
+      console.log('status id', id)
+      await reportCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: { status },
+          $push: {
+            timeline: {
+              text: `Status changed to ${status}`,
+              date: new Date(),
+            },
+          },
+        }
+      );
+
+      res.send({ success: true });
     });
 
     // -----------------------
@@ -143,7 +283,7 @@ async function run() {
       // Default values
       user.role = "user";
       user.createdAt = new Date();
-      user.isPremium = false; // ⬅️ Set default premium status
+      user.isPremium = false; 
 
       console.log("this is user", user);
 
@@ -202,11 +342,10 @@ async function run() {
 
     // Stripe checkout
     app.post("/create-checkout-session", async (req, res) => {
-      const paymentInfo = req.body;
-      console.log("paymentinfo is hare", paymentInfo);
-      const bdtAmount = 1000;
+      const { email, purpose, issueId, plan } = req.body;
+
+      const bdtAmount = purpose === "boost" ? 100 : 1000;
       const usdAmount = Math.round(bdtAmount / 110);
-      console.log("paymentinfo is hare", paymentInfo);
 
       try {
         const session = await stripe.checkout.sessions.create({
@@ -216,73 +355,121 @@ async function run() {
               price_data: {
                 currency: "usd",
                 unit_amount: usdAmount * 100,
-                product_data: { name: "Premium Subscription" },
+                product_data: {
+                  name:
+                    purpose === "boost"
+                      ? "Issue Priority Boost"
+                      : "Premium Subscription",
+                },
               },
               quantity: 1,
             },
           ],
-          customer_email: paymentInfo?.email,
+          customer_email: email,
           mode: "payment",
+
+        
           metadata: {
-            amount_bdt: 1000,
-            plan: paymentInfo.plan,
+            purpose, 
+            issueId: issueId || null,
+            plan: plan || null,
+            amount_bdt: bdtAmount,
           },
 
-          success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+          success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.SITE_DOMAIN}/payment-cancelled`,
         });
 
         res.json({ url: session.url });
       } catch (err) {
-        console.log(err);
+        console.error(err);
         res.status(500).json({ error: err.message });
       }
     });
+    // app.patch("/payment-success", async (req, res) => {
+    //   try {
+    //     const { sessionId } = req.body;
+    //    console.log('this is session id',sessionId)
+    //     const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    app.post("/payment-success", async (req, res) => {
-      try {
-        const { sessionId } = req.body;
+    //     if (session.payment_status !== "paid") {
+    //       return res
+    //         .status(400)
+    //         .send({ success: false, message: "Payment not completed" });
+    //     }
 
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
+    //     const purpose = session.metadata.purpose;
 
-        if (session.payment_status !== "paid") {
-          return res.send({ success: false, message: "Payment not completed" });
-        }
+    //     //boost
+    //     if (purpose === "boost") {
+    //       const issueId = session.metadata.issueId;
+    //       console.log(issueId)
 
-        // Update user premium
-        await userCollection.updateOne(
-          { email: session.customer_details.email },
-          {
-            $set: {
-              isPremium: true,
-              premiumDate: new Date(),
-            },
-          }
-        );
+    //       await reportCollection.updateOne(
+    //         { _id: (issueId) },
+    //         {
+    //           $set: { priority: "High" },
+    //           $push: {
+    //             timeline: {
+    //               text: "Priority boosted (100 BDT payment)",
+    //               date: new Date(),
+    //             },
+    //           },
+    //         }
+    //       );
 
-        // Save order in DB
-        const orderInfo = {
-          transactionId: session.payment_intent,
-          email: session.customer_details.email,
-          amount_usd: session.amount_total / 100,
-          amount_bdt: session.metadata.amount_bdt,
-          plan: session.metadata.plan,
-          status: "completed",
-        };
+    //       return res.send({
+    //         success: true,
+    //         purpose: "boost",
+    //         issueId,
+    //       });
+    //     }
 
-        await subscribeCollection.insertOne(orderInfo);
+    //     //subscribe
+      
+    //     if (purpose === "subscribe") {
+    //       await userCollection.updateOne(
+    //         { email: session.customer_details.email },
+    //         {
+    //           $set: {
+    //             isPremium: true,
+    //             premiumDate: new Date(),
+    //           },
+    //         }
+    //       );
 
-        res.send({ success: true });
-      } catch (error) {
-        res.status(500).send({ error: error.message });
-      }
+    //       await subscribeCollection.insertOne({
+    //         transactionId: session.payment_intent,
+    //         email: session.customer_details.email,
+    //         amount_usd: session.amount_total / 100,
+    //         amount_bdt: session.metadata.amount_bdt,
+    //         plan: session.metadata.plan,
+    //         status: "completed",
+    //         createdAt: new Date(),
+    //       });
+
+    //       return res.send({
+    //         success: true,
+    //         purpose: "subscribe",
+    //       });
+    //     }
+
+    //     res.status(400).send({ message: "Unknown payment purpose" });
+    //   } catch (err) {
+    //     console.error(err);
+    //     res.status(500).send({ error: err.message });
+    //   }
+    // });
+
+      app.patch("/payment-success", async (req, res) => {
+      console.log(req.body)
     });
 
     // ping
     await client.db("admin").command({ ping: 1 });
     console.log("Connected to MongoDB successfully!");
   } finally {
-    // keep connection open
+   
   }
 }
 
