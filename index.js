@@ -88,15 +88,13 @@ async function run() {
       if (email) query.email = email;
 
       const cursor = reportCollection.find(query).sort({
-        priority: -1, 
+        priority: -1,
         createdAt: -1,
       });
 
       const result = await cursor.toArray();
       res.send(result);
     });
-
-
 
     app.get("/issus/:id", async (req, res) => {
       const id = req.params.id;
@@ -338,6 +336,25 @@ async function run() {
 
       const result = await userCollection.insertOne(user);
       res.send(result);
+    });
+    app.get("/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+
+      try {
+        const user = await userCollection.findOne({ email });
+
+        if (!user) {
+          return res
+            .status(404)
+            .send({ role: null, message: "User not found" });
+        }
+
+        res.send({
+          role: user.role || "user", // fallback safety
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to get user role" });
+      }
     });
 
     app.post("/subscribe", async (req, res) => {
