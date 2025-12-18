@@ -2,9 +2,16 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 require("dotenv").config();
+const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
-const port = process.env.PORT || 3000;
+const serviceAccount = require("./city-fix-firebase-adminsdk-fbsvc-822010d878.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+const port = process.env.PORT || 5000;
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
@@ -13,21 +20,38 @@ app.use(express.json());
 app.use(cors());
 
 const verifyFBToken = async (req, res, next) => {
-  // console.log("headers in the middleware", req.headers.authorization);
-  const token = req.headers.authorization;
+  const authHeader = req.headers.authorization || req.headers.Authorization;
 
-  if (!token) {
-    return res.status(401).send({ message: "unauthorized access" });
+  console.log("Raw Authorization header:", authHeader); // ডিবাগ
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res
+      .status(401)
+      .json({ message: "No token provided or invalid format" });
   }
 
+  const idToken = authHeader.split("Bearer ")[1].trim(); // trim দিয়ে extra space সরাও
+
+  console.log(
+    "Extracted token (first 30 chars):",
+    idToken.substring(0, 30) + "..."
+  );
+
   try {
-    const idToken = token.split(" ")[1];
     const decoded = await admin.auth().verifyIdToken(idToken);
-    console.log("decoded id the token", decoded);
-    req.decoded_email = decoded.email;
+    console.log("✅ Token verified:", decoded.uid, decoded.email);
+
+    // এখানে দুইটা জিনিস সেট করো
+    req.decoded_email = decoded.email; // verifyAdmin/verifyStaff এর জন্য
+    req.user = decoded; // অন্যান্য কাজের জন্য (optional)
+
     next();
-  } catch (err) {
-    return res.status(401).send({ message: "unauthorize access" });
+  } catch (error) {
+    console.error("❌ Token verification failed:", error.code, error.message);
+    return res.status(401).json({
+      message: "Invalid or expired token",
+      error: error.message,
+    });
   }
 };
 
@@ -56,27 +80,37 @@ async function run() {
 
     //middl admin before allowing admin activity
     //must be used verifyFBToken middleware
+    // Admin Verification
     const verifyAdmin = async (req, res, next) => {
       const email = req.decoded_email;
-      const query = { email };
-      const user = await userCollection.findOne(query);
+      if (!email) {
+        return res.status(401).send({ message: "Unauthorized" });
+      }
 
-      if (!user || user.role !== "admin") {
-        return res.status(403).send({ message: "forbidden access" });
+      const user = await userCollection.findOne({ email });
+      if (user?.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: Admin access required" });
       }
       next();
     };
-    const verifyStuff = async (req, res, next) => {
+
+    // Staff Verification
+    const verifyStaff = async (req, res, next) => {
       const email = req.decoded_email;
-      const query = { email };
-      const user = await userCollection.findOne(query);
+      if (!email) {
+        return res.status(401).send({ message: "Unauthorized" });
+      }
 
-      if (!user || user.role !== "stuff") {
-        return res.status(403).send({ message: "forbidden access" });
+      const user = await userCollection.findOne({ email });
+      if (user?.role !== "staff") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: Staff access required" });
       }
       next();
     };
-
     // -----------------------
     // issus (ISSUES) API
     // -----------------------
@@ -229,6 +263,103 @@ async function run() {
       }
     });
 
+    //report count api
+    app.get("/admin/stats", verifyFBToken, verifyAdmin, async (req, res) => {
+      // Total issues
+      const totalIssues = await reportCollection.countDocuments();
+
+      // Resolved count
+      const resolvedCount = await reportCollection.countDocuments({
+        status: "Resolved",
+      });
+
+      // Pending count
+      const pendingCount = await reportCollection.countDocuments({
+        status: "pending",
+      });
+
+      // Rejected count (ধরে নিচ্ছি তুমি rejected status যোগ করবে DB-এ)
+      const rejectedCount = await reportCollection.countDocuments({
+        status: "rejected",
+      });
+
+      // Total payments (subscribeCollection থেকে sum)
+      const totalPayments = await subscribeCollection
+        .aggregate([{ $group: { _id: null, total: { $sum: "$amount_bdt" } } }])
+        .toArray();
+      const totalPaymentAmount = totalPayments[0]?.total || 0;
+
+      // Latest 5 issues
+      const latestIssues = await reportCollection
+        .find()
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray();
+
+      // Latest 5 payments
+      const latestPayments = await subscribeCollection
+        .find()
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray();
+
+      // Latest 5 users
+      const latestUsers = await userCollection
+        .find()
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray();
+
+      // Chart data (status wise)
+      const statusStats = await reportCollection
+        .aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }])
+        .toArray();
+
+      res.send({
+        totalIssues,
+        resolvedCount,
+        pendingCount,
+        rejectedCount,
+        totalPaymentAmount,
+        latestIssues,
+        latestPayments,
+        latestUsers,
+        statusStats,
+      });
+    });
+    app.patch(
+      "/admin/reject-issue/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const result = await reportCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: "rejected" } }
+        );
+        res.send(result);
+      }
+    );
+
+    app.get("/staff/list", verifyFBToken, verifyAdmin, async (req, res) => {
+      const staff = await userCollection.find({ role: "staff" }).toArray();
+      res.send(staff);
+    });
+    app.patch(
+      "/admin/user-block/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const { blocked } = req.body; // true/false
+        const result = await userCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { blocked } }
+        );
+        res.send(result);
+      }
+    );
+
     // app.get("/latest-resolved", async (req, res) => {
     //   try {
     //     const limit = parseInt(req.query.limit) || 6;
@@ -299,6 +430,154 @@ async function run() {
       res.send({ success: true });
     });
 
+    // 1. Staff er kache assign kora sob issue gulo dekha
+    // Staff assigned issues
+    app.get(
+      "/staff/assigned-issues",
+      verifyFBToken,
+      verifyStaff,
+      async (req, res) => {
+        const email = req.decoded_email; // এখন ঠিক আছে
+        const query = { assignedStaffEmail: email };
+        const result = await reportCollection.find(query).toArray();
+        res.send(result);
+      }
+    );
+
+    // Staff progress update
+    app.patch(
+      "/staff/update-progress/:id",
+      verifyFBToken,
+      verifyStaff,
+      async (req, res) => {
+        const id = req.params.id;
+        const { progressNote, status } = req.body;
+
+        const updateDoc = {
+          $set: { status },
+          $push: {
+            timeline: {
+              text: progressNote,
+              date: new Date(),
+              updatedBy: req.decoded_email,
+            },
+          },
+        };
+
+        const result = await reportCollection.updateOne(
+          { _id: new ObjectId(id) },
+          updateDoc
+        );
+        res.send(result);
+      }
+    );
+    app.get("/staff/stats", verifyFBToken, verifyStaff, async (req, res) => {
+      const email = req.decoded_email;
+      const today = new Date();
+      const todayStart = new Date(today.setHours(0, 0, 0, 0));
+
+      // Assigned issues count
+      const assignedCount = await reportCollection.countDocuments({
+        assignedStaffEmail: email,
+      });
+
+      // Resolved issues count (all time)
+      const resolvedCount = await reportCollection.countDocuments({
+        assignedStaffEmail: email,
+        status: "Resolved",
+      });
+
+      // Today's tasks (pending/in-progress/working today)
+      const todaysTasks = await reportCollection
+        .find({
+          assignedStaffEmail: email,
+          createdAt: { $gte: todayStart },
+          status: { $in: ["pending", "assigned", "In Progress", "Working"] },
+        })
+        .toArray();
+
+      // Stats for charts (e.g., status wise count)
+      const statusStats = await reportCollection
+        .aggregate([
+          { $match: { assignedStaffEmail: email } },
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ])
+        .toArray();
+
+      // More stats (e.g., priority wise)
+      const priorityStats = await reportCollection
+        .aggregate([
+          { $match: { assignedStaffEmail: email } },
+          { $group: { _id: "$priority", count: { $sum: 1 } } },
+        ])
+        .toArray();
+
+      res.send({
+        assignedCount,
+        resolvedCount,
+        todaysTasks,
+        statusStats,
+        priorityStats,
+      });
+    });
+
+    // // 2. Kono issue er progress update kora (Timeline update)
+    // app.patch(
+    //   "/staff/update-progress/:id",
+    //   verifyFBToken,
+    //   verifyStaff,
+    //   async (req, res) => {
+    //     const id = req.params.id;
+    //     const { progressNote, status } = req.body; // status: "In Progress" or "Resolved"
+
+    //     const updateDoc = {
+    //       $set: { status: status },
+    //       $push: {
+    //         timeline: {
+    //           text: progressNote,
+    //           date: new Date(),
+    //           updatedBy: req.decoded_email,
+    //         },
+    //       },
+    //     };
+
+    //     const result = await reportCollection.updateOne(
+    //       { _id: new ObjectId(id) },
+    //       updateDoc
+    //     );
+    //     res.send(result);
+    //   }
+    // );
+
+    // // Admin jokhon staff assign korbe (Backend endpoint)
+    // app.patch(
+    //   "/admin/assign-staff/:id",
+    //   verifyFBToken,
+    //   verifyAdmin,
+    //   async (req, res) => {
+    //     const id = req.params.id;
+    //     const { staffEmail, staffName } = req.body;
+
+    //     const result = await reportCollection.updateOne(
+    //       { _id: new ObjectId(id) },
+    //       {
+    //         $set: {
+    //           assignedStaffEmail: staffEmail,
+    //           assignedStaffName: staffName,
+    //           status: "assigned",
+    //         },
+    //         $push: {
+    //           timeline: {
+    //             text: `Staff ${staffName} assigned to this issue`,
+    //             date: new Date(),
+    //           },
+    //         },
+    //       }
+    //     );
+    //     res.send(result);
+    //   }
+    // );
+
     // -----------------------
     // USERS API
     // -----------------------
@@ -315,6 +594,23 @@ async function run() {
         console.error("GET /users/email error:", error);
         res.status(500).send({ message: "Server error" });
       }
+    });
+
+    app.get("/users", verifyFBToken, async (req, res) => {
+      const searchText = req.query.searchText || "";
+
+      let query = {};
+      if (searchText) {
+        query = {
+          $or: [
+            { displayName: { $regex: searchText, $options: "i" } },
+            { email: { $regex: searchText, $options: "i" } },
+          ],
+        };
+      }
+
+      const users = await userCollection.find(query).toArray();
+      res.send(users);
     });
 
     app.post("/users", async (req, res) => {
@@ -397,6 +693,19 @@ async function run() {
         console.log(error);
         res.status(500).send({ message: "Failed to save subscription" });
       }
+    });
+
+    app.patch("/users/:id/role", async (req, res) => {
+      const id = req.params.id;
+      const { role } = req.body;
+
+      const filter = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: { role },
+      };
+
+      const result = await userCollection.updateOne(filter, updateDoc);
+      res.send(result);
     });
 
     // Stripe checkout
