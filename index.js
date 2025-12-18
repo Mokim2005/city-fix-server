@@ -444,6 +444,96 @@ async function run() {
       }
     );
 
+    app.post(
+      "/admin/add-staff",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { displayName, email, phone, photoURL, password } = req.body;
+        try {
+          const fbUser = await admin
+            .auth()
+            .createUser({ email, password, displayName, photoURL });
+          const dbUser = {
+            uid: fbUser.uid,
+            displayName,
+            email,
+            phone,
+            photoURL,
+            role: "staff",
+            createdAt: new Date(),
+          };
+          await userCollection.insertOne(dbUser);
+          res.send({ success: true });
+        } catch (error) {
+          res.status(500).send({ message: error.message });
+        }
+      }
+    );
+
+    app.patch(
+      "/admin/update-staff/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const { displayName, phone, photoURL } = req.body;
+        const result = await userCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { displayName, phone, photoURL } }
+        );
+        res.send(result);
+      }
+    );
+
+    app.delete(
+      "/admin/delete-staff/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const user = await userCollection.findOne({ _id: new ObjectId(id) });
+        if (user) {
+          await admin.auth().deleteUser(user.uid);
+          await userCollection.deleteOne({ _id: new ObjectId(id) });
+          res.send({ success: true });
+        } else {
+          res.status(404).send({ message: "Staff not found" });
+        }
+      }
+    );
+
+    // Admin: Get all payments history
+    app.get("/admin/payments", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        // Optional filter by purpose (subscribe/boost) or date
+        const { purpose, month } = req.query;
+
+        let query = {};
+
+        if (purpose) {
+          query.purpose = purpose; // "subscribe" or "boost"
+        }
+
+        if (month) {
+          // Example: month=2025-12
+          const start = new Date(`${month}-01`);
+          const end = new Date(start);
+          end.setMonth(end.getMonth() + 1);
+          query.createdAt = { $gte: start, $lt: end };
+        }
+
+        const payments = await subscribeCollection
+          .find(query)
+          .sort({ createdAt: -1 }) // newest first
+          .toArray();
+
+        res.send(payments);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to fetch payments" });
+      }
+    });
     // Staff progress update
     app.patch(
       "/staff/update-progress/:id",
