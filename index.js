@@ -444,96 +444,7 @@ async function run() {
       }
     );
 
-    app.post(
-      "/admin/add-staff",
-      verifyFBToken,
-      verifyAdmin,
-      async (req, res) => {
-        const { displayName, email, phone, photoURL, password } = req.body;
-        try {
-          const fbUser = await admin
-            .auth()
-            .createUser({ email, password, displayName, photoURL });
-          const dbUser = {
-            uid: fbUser.uid,
-            displayName,
-            email,
-            phone,
-            photoURL,
-            role: "staff",
-            createdAt: new Date(),
-          };
-          await userCollection.insertOne(dbUser);
-          res.send({ success: true });
-        } catch (error) {
-          res.status(500).send({ message: error.message });
-        }
-      }
-    );
 
-    app.patch(
-      "/admin/update-staff/:id",
-      verifyFBToken,
-      verifyAdmin,
-      async (req, res) => {
-        const id = req.params.id;
-        const { displayName, phone, photoURL } = req.body;
-        const result = await userCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { displayName, phone, photoURL } }
-        );
-        res.send(result);
-      }
-    );
-
-    app.delete(
-      "/admin/delete-staff/:id",
-      verifyFBToken,
-      verifyAdmin,
-      async (req, res) => {
-        const id = req.params.id;
-        const user = await userCollection.findOne({ _id: new ObjectId(id) });
-        if (user) {
-          await admin.auth().deleteUser(user.uid);
-          await userCollection.deleteOne({ _id: new ObjectId(id) });
-          res.send({ success: true });
-        } else {
-          res.status(404).send({ message: "Staff not found" });
-        }
-      }
-    );
-
-    // Admin: Get all payments history
-    app.get("/admin/payments", verifyFBToken, verifyAdmin, async (req, res) => {
-      try {
-        // Optional filter by purpose (subscribe/boost) or date
-        const { purpose, month } = req.query;
-
-        let query = {};
-
-        if (purpose) {
-          query.purpose = purpose; // "subscribe" or "boost"
-        }
-
-        if (month) {
-          // Example: month=2025-12
-          const start = new Date(`${month}-01`);
-          const end = new Date(start);
-          end.setMonth(end.getMonth() + 1);
-          query.createdAt = { $gte: start, $lt: end };
-        }
-
-        const payments = await subscribeCollection
-          .find(query)
-          .sort({ createdAt: -1 }) // newest first
-          .toArray();
-
-        res.send(payments);
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Failed to fetch payments" });
-      }
-    });
     // Staff progress update
     app.patch(
       "/staff/update-progress/:id",
@@ -611,62 +522,259 @@ async function run() {
       });
     });
 
-    // // 2. Kono issue er progress update kora (Timeline update)
-    // app.patch(
-    //   "/staff/update-progress/:id",
-    //   verifyFBToken,
-    //   verifyStaff,
-    //   async (req, res) => {
-    //     const id = req.params.id;
-    //     const { progressNote, status } = req.body; // status: "In Progress" or "Resolved"
+    // ==================== ADMIN APIs ====================
 
-    //     const updateDoc = {
-    //       $set: { status: status },
-    //       $push: {
-    //         timeline: {
-    //           text: progressNote,
-    //           date: new Date(),
-    //           updatedBy: req.decoded_email,
-    //         },
-    //       },
-    //     };
+    // Add new staff
+    app.post(
+      "/admin/add-staff",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { displayName, email, phone, photoURL, password } = req.body;
 
-    //     const result = await reportCollection.updateOne(
-    //       { _id: new ObjectId(id) },
-    //       updateDoc
-    //     );
-    //     res.send(result);
-    //   }
-    // );
+        // Basic validation
+        if (!displayName || !email || !password) {
+          return res.status(400).json({
+            success: false,
+            message: "Name, email and password are required",
+          });
+        }
 
-    // // Admin jokhon staff assign korbe (Backend endpoint)
-    // app.patch(
-    //   "/admin/assign-staff/:id",
-    //   verifyFBToken,
-    //   verifyAdmin,
-    //   async (req, res) => {
-    //     const id = req.params.id;
-    //     const { staffEmail, staffName } = req.body;
+        try {
+          const fbUser = await admin.auth().createUser({
+            email,
+            password,
+            displayName,
+            photoURL: photoURL || null,
+          });
 
-    //     const result = await reportCollection.updateOne(
-    //       { _id: new ObjectId(id) },
-    //       {
-    //         $set: {
-    //           assignedStaffEmail: staffEmail,
-    //           assignedStaffName: staffName,
-    //           status: "assigned",
-    //         },
-    //         $push: {
-    //           timeline: {
-    //             text: `Staff ${staffName} assigned to this issue`,
-    //             date: new Date(),
-    //           },
-    //         },
-    //       }
-    //     );
-    //     res.send(result);
-    //   }
-    // );
+          const dbUser = {
+            uid: fbUser.uid,
+            displayName,
+            email,
+            phone: phone || null,
+            photoURL: photoURL || null,
+            role: "staff",
+            createdAt: new Date(),
+          };
+
+          await userCollection.insertOne(dbUser);
+
+          res.json({ success: true, message: "Staff created successfully" });
+        } catch (error) {
+          console.error("Add staff error:", error);
+
+          // Firebase specific common errors
+          if (error.code === "auth/email-already-exists") {
+            return res
+              .status(400)
+              .json({ success: false, message: "Email already in use" });
+          }
+
+          res
+            .status(500)
+            .json({ success: false, message: "Failed to create staff" });
+        }
+      }
+    );
+
+    // Update staff (name, phone, photo)
+    app.patch(
+      "/admin/update-staff/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const { displayName, phone, photoURL } = req.body;
+
+        if (!ObjectId.isValid(id)) {
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid staff ID" });
+        }
+
+        try {
+          const result = await userCollection.updateOne(
+            { _id: new ObjectId(id), role: "staff" }, // extra safety: only update staff
+            { $set: { displayName, phone, photoURL } }
+          );
+
+          if (result.matchedCount === 0) {
+            return res
+              .status(404)
+              .json({ success: false, message: "Staff not found" });
+          }
+
+          res.json({ success: true, message: "Staff updated successfully" });
+        } catch (error) {
+          console.error("Update staff error:", error);
+          res.status(500).json({ success: false, message: "Server error" });
+        }
+      }
+    );
+
+    // Assign staff to issue (আপনার দেওয়া কোডটা খুব ভালো, শুধু কিছু polish করলাম)
+    app.patch(
+      "/admin/assign-staff/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const { staffEmail } = req.body;
+
+          if (!staffEmail) {
+            return res.status(400).json({
+              success: false,
+              message: "Staff email is required",
+            });
+          }
+
+          if (!ObjectId.isValid(id)) {
+            return res
+              .status(400)
+              .json({ success: false, message: "Invalid issue ID" });
+          }
+
+          // Verify staff exists
+          const staffUser = await userCollection.findOne({
+            email: staffEmail,
+            role: "staff",
+          });
+
+          if (!staffUser) {
+            return res.status(404).json({
+              success: false,
+              message: "Staff member not found or not a staff",
+            });
+          }
+
+          // Get issue
+          const issue = await reportCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (!issue) {
+            return res.status(404).json({
+              success: false,
+              message: "Issue not found",
+            });
+          }
+
+          // Prevent re-assignment
+          if (issue.assignedStaffEmail) {
+            return res.status(400).json({
+              success: false,
+              message: "Issue already assigned. Re-assignment not allowed.",
+            });
+          }
+
+          // Assign
+          const result = await reportCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: { assignedStaffEmail: staffEmail },
+              $push: {
+                timeline: {
+                  text: `Assigned to staff: ${
+                    staffUser.displayName || staffEmail
+                  }`,
+                  date: new Date(),
+                  updatedBy: req.decoded_email, // admin who assigned
+                },
+              },
+            }
+          );
+
+          if (result.modifiedCount === 0) {
+            return res.status(500).json({
+              success: false,
+              message: "Failed to assign staff",
+            });
+          }
+
+          res.json({
+            success: true,
+            message: "Staff assigned successfully",
+            assignedStaffEmail: staffEmail,
+          });
+        } catch (error) {
+          console.error("Assign staff error:", error);
+          res.status(500).json({ success: false, message: "Server error" });
+        }
+      }
+    );
+
+    // Delete staff
+    app.delete(
+      "/admin/delete-staff/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid staff ID" });
+        }
+
+        try {
+          const user = await userCollection.findOne({
+            _id: new ObjectId(id),
+            role: "staff",
+          });
+
+          if (!user) {
+            return res
+              .status(404)
+              .json({ success: false, message: "Staff not found" });
+          }
+
+          // Delete from Firebase Auth
+          await admin.auth().deleteUser(user.uid);
+
+          // Delete from MongoDB
+          await userCollection.deleteOne({ _id: new ObjectId(id) });
+
+          res.json({ success: true, message: "Staff deleted successfully" });
+        } catch (error) {
+          console.error("Delete staff error:", error);
+          res
+            .status(500)
+            .json({ success: false, message: "Failed to delete staff" });
+        }
+      }
+    );
+
+    // Get all payments (already good, just small improvement)
+    app.get("/admin/payments", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const { purpose, month } = req.query;
+
+        let query = {};
+
+        if (purpose) query.purpose = purpose;
+        if (month) {
+          const start = new Date(`${month}-01`);
+          const end = new Date(start);
+          end.setMonth(end.getMonth() + 1);
+          query.createdAt = { $gte: start, $lt: end };
+        }
+
+        const payments = await subscribeCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json(payments);
+      } catch (error) {
+        console.error("Fetch payments error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch payments" });
+      }
+    });
 
     // -----------------------
     // USERS API
