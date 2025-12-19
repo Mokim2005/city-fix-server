@@ -177,6 +177,54 @@ async function run() {
       }
     });
 
+    // User Profile Update (for all roles: user, staff, admin) - FIXED
+    app.patch("/users/profile", verifyFBToken, async (req, res) => {
+      const email = req.decoded_email;
+      const { displayName, photoURL } = req.body;
+
+      // কোনোটাই না থাকলে error
+      if (!displayName && !photoURL) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Nothing to update" });
+      }
+
+      const updateFields = {};
+      if (displayName !== undefined)
+        updateFields.displayName = displayName?.trim();
+      if (photoURL !== undefined) updateFields.photoURL = photoURL;
+
+      try {
+        // MongoDB update
+        const result = await userCollection.updateOne(
+          { email },
+          { $set: updateFields }
+        );
+
+        if (result.matchedCount === 0) {
+          return res
+            .status(404)
+            .json({ success: false, message: "User not found" });
+        }
+
+        // Firebase Auth sync - শুধু যেটা পাঠানো হয়েছে সেটা update করুন
+        const userRecord = await admin.auth().getUserByEmail(email);
+
+        const fbUpdate = {};
+        if (displayName !== undefined)
+          fbUpdate.displayName = displayName?.trim() || userRecord.displayName;
+        if (photoURL !== undefined)
+          fbUpdate.photoURL = photoURL || userRecord.photoURL;
+
+        await admin.auth().updateUser(userRecord.uid, fbUpdate);
+
+        res.json({ success: true, message: "Profile updated successfully" });
+      } catch (error) {
+        console.error("Profile update error:", error);
+        res.status(500).json({ success: false, message: "Server error" });
+      }
+    });l
+
     // Create new report
     app.post("/issus", async (req, res) => {
       const { title, description, image, category, location, email } = req.body;
@@ -443,7 +491,6 @@ async function run() {
         res.send(result);
       }
     );
-
 
     // Staff progress update
     app.patch(
