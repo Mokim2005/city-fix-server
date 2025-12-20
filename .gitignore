@@ -1,3 +1,4 @@
 node_modules
 .env
 city-fix-firebase-adminsdk-fbsvc-822010d878.json
+.vercel

@@ -5,7 +5,11 @@ require("dotenv").config();
 const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
-const serviceAccount = require("./city-fix-firebase-adminsdk-fbsvc-822010d878.json");
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -79,7 +83,7 @@ async function run() {
     const subscribeCollection = db.collection("subscribe");
 
     //middl admin before allowing admin activity
-    //must be used verifyFBToken middleware
+
     // Admin Verification
     const verifyAdmin = async (req, res, next) => {
       const email = req.decoded_email;
@@ -177,53 +181,72 @@ async function run() {
       }
     });
 
-    // User Profile Update (for all roles: user, staff, admin) - FIXED
+    // User Profile Update
     app.patch("/users/profile", verifyFBToken, async (req, res) => {
       const email = req.decoded_email;
       const { displayName, photoURL } = req.body;
 
-      // কোনোটাই না থাকলে error
-      if (!displayName && !photoURL) {
+      if (displayName === undefined && photoURL === undefined) {
         return res
           .status(400)
           .json({ success: false, message: "Nothing to update" });
       }
 
-      const updateFields = {};
-      if (displayName !== undefined)
-        updateFields.displayName = displayName?.trim();
-      if (photoURL !== undefined) updateFields.photoURL = photoURL;
-
       try {
+        const mongoUpdate = {};
+
+        if (displayName !== undefined) {
+          const trimmedName = displayName?.trim();
+          mongoUpdate.displayName = trimmedName || null;
+        }
+
+        if (photoURL !== undefined) {
+          const trimmedPhoto = photoURL?.trim();
+          mongoUpdate.photoURL = trimmedPhoto === "" ? null : trimmedPhoto;
+        }
+
         // MongoDB update
-        const result = await userCollection.updateOne(
+        const mongoResult = await userCollection.updateOne(
           { email },
-          { $set: updateFields }
+          { $set: mongoUpdate }
         );
 
-        if (result.matchedCount === 0) {
+        if (mongoResult.matchedCount === 0) {
           return res
             .status(404)
             .json({ success: false, message: "User not found" });
         }
 
-        // Firebase Auth sync - শুধু যেটা পাঠানো হয়েছে সেটা update করুন
-        const userRecord = await admin.auth().getUserByEmail(email);
-
         const fbUpdate = {};
-        if (displayName !== undefined)
-          fbUpdate.displayName = displayName?.trim() || userRecord.displayName;
-        if (photoURL !== undefined)
-          fbUpdate.photoURL = photoURL || userRecord.photoURL;
 
+        if (displayName !== undefined) {
+          const trimmedName = displayName?.trim();
+
+          fbUpdate.displayName = trimmedName || "";
+        }
+
+        if (photoURL !== undefined) {
+          const trimmedPhoto = photoURL?.trim();
+          if (trimmedPhoto && trimmedPhoto !== "") {
+            fbUpdate.photoURL = trimmedPhoto;
+          } else {
+            fbUpdate.photoURL = null;
+          }
+        }
+
+        // Firebase Auth update
+        const userRecord = await admin.auth().getUserByEmail(email);
         await admin.auth().updateUser(userRecord.uid, fbUpdate);
 
-        res.json({ success: true, message: "Profile updated successfully" });
+        res.json({
+          success: true,
+          message: "Profile updated successfully",
+        });
       } catch (error) {
         console.error("Profile update error:", error);
         res.status(500).json({ success: false, message: "Server error" });
       }
-    });l
+    });
 
     // Create new report
     app.post("/issus", async (req, res) => {
@@ -485,7 +508,7 @@ async function run() {
       verifyFBToken,
       verifyStaff,
       async (req, res) => {
-        const email = req.decoded_email; // এখন ঠিক আছে
+        const email = req.decoded_email;
         const query = { assignedStaffEmail: email };
         const result = await reportCollection.find(query).toArray();
         res.send(result);
@@ -660,7 +683,7 @@ async function run() {
       }
     );
 
-    // Assign staff to issue (আপনার দেওয়া কোডটা খুব ভালো, শুধু কিছু polish করলাম)
+    // Assign staff to issue
     app.patch(
       "/admin/assign-staff/:id",
       verifyFBToken,
@@ -794,7 +817,7 @@ async function run() {
       }
     );
 
-    // Get all payments (already good, just small improvement)
+    // Get all payments
     app.get("/admin/payments", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const { purpose, month } = req.query;
@@ -820,6 +843,58 @@ async function run() {
         res
           .status(500)
           .json({ success: false, message: "Failed to fetch payments" });
+      }
+    });
+
+    app.get("/dashboard/stats", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        if (!email) {
+          return res.status(401).json({ message: "Unauthorized" });
+        }
+
+        // 1. Total issues by this user
+        const total = await reportCollection.countDocuments({ email });
+
+        // 2. Status-wise counts
+        const pending = await reportCollection.countDocuments({
+          email,
+          status: "pending",
+        });
+
+        const inProgress = await reportCollection.countDocuments({
+          email,
+          status: { $in: ["In Progress", "assigned", "Working"] },
+        });
+
+        const resolved = await reportCollection.countDocuments({
+          email,
+          status: "Resolved",
+        });
+
+        // 3. Total payments (subscribeCollection থেকে এই ইউজারের সব payment sum)
+        const paymentResult = await subscribeCollection
+          .aggregate([
+            { $match: { email, purpose: "subscribe" } }, // শুধু subscription payment
+            { $group: { _id: null, total: { $sum: "$amount_bdt" } } },
+          ])
+          .toArray();
+
+        const totalPayments =
+          paymentResult.length > 0 ? paymentResult[0].total : 0;
+
+        // Final response – frontend এ exactly এটা expect করছে
+        res.json({
+          total,
+          pending,
+          inProgress,
+          resolved,
+          payments: totalPayments,
+        });
+      } catch (error) {
+        console.error("Dashboard stats error:", error);
+        res.status(500).json({ message: "Server error" });
       }
     });
 
@@ -1161,8 +1236,8 @@ async function run() {
       }
     });
     // ping
-    await client.db("admin").command({ ping: 1 });
-    console.log("Connected to MongoDB successfully!");
+    // await client.db("admin").command({ ping: 1 });
+    // console.log("Connected to MongoDB successfully!");
   } finally {
   }
 }
