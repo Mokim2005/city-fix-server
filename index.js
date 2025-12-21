@@ -4,7 +4,7 @@ const app = express();
 require("dotenv").config();
 const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-
+const { Profiler } = require("react");
 
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf8"
@@ -141,6 +141,34 @@ async function run() {
       res.send(issue);
     });
 
+    app.get("/latest-resolve", async (req, res) => {
+      try {
+        const result = await reportCollection
+          .find({ status: "Resolved" })
+          .sort({ resolvedAt: -1 })
+          .limit(6)
+          .toArray();
+
+        if (result.length === 0) {
+          return res.status(404).json({
+            message: "No resolved issues found",
+          });
+        }
+
+        res.json({
+          message: "Latest 6 resolved issues",
+          count: result.length,
+          data: result,
+        });
+      } catch (error) {
+        console.error("Error fetching latest resolved issues:", error);
+        res.status(500).json({
+          message: "Server error",
+          error: error.message,
+        });
+      }
+    });
+
     // Delete report
     app.delete("/issus/:id", async (req, res) => {
       const id = req.params.id;
@@ -186,65 +214,115 @@ async function run() {
       const email = req.decoded_email;
       const { displayName, photoURL } = req.body;
 
+      // লগ করে দেখি কী আসছে
+      console.log("Profile update request for:", email);
+      console.log("Received data:", { displayName, photoURL });
+
+      // কিছু না পাঠালে এরর দাও
       if (displayName === undefined && photoURL === undefined) {
-        return res
-          .status(400)
-          .json({ success: false, message: "Nothing to update" });
+        return res.status(400).json({
+          success: false,
+          message: "Nothing to update. Send displayName or photoURL.",
+        });
       }
 
       try {
         const mongoUpdate = {};
 
+        // Display Name আপডেট
         if (displayName !== undefined) {
           const trimmedName = displayName?.trim();
-          mongoUpdate.displayName = trimmedName || null;
+          if (trimmedName === "") {
+            mongoUpdate.displayName = null; // অথবা "" রাখতে চাইলে "" দাও
+          } else {
+            mongoUpdate.displayName = trimmedName;
+          }
+          console.log("Updating displayName to:", trimmedName || "(empty)");
         }
 
+        // Photo URL আপডেট
         if (photoURL !== undefined) {
           const trimmedPhoto = photoURL?.trim();
-          mongoUpdate.photoURL = trimmedPhoto === "" ? null : trimmedPhoto;
+          if (trimmedPhoto === "" || trimmedPhoto === "null") {
+            mongoUpdate.photoURL = null;
+          } else {
+            mongoUpdate.photoURL = trimmedPhoto;
+          }
+          console.log("Updating photoURL to:", trimmedPhoto || "(removed)");
         }
 
-        // MongoDB update
+        // MongoDB এ আপডেট করি
         const mongoResult = await userCollection.updateOne(
           { email },
           { $set: mongoUpdate }
         );
 
         if (mongoResult.matchedCount === 0) {
-          return res
-            .status(404)
-            .json({ success: false, message: "User not found" });
+          console.log("User not found in MongoDB:", email);
+          return res.status(404).json({
+            success: false,
+            message: "User not found",
+          });
         }
+
+        console.log(
+          "MongoDB update successful:",
+          mongoResult.modifiedCount,
+          "document updated"
+        );
+
+        // Firebase Auth এ আপডেট করি
+        const userRecord = await admin.auth().getUserByEmail(email);
 
         const fbUpdate = {};
-
         if (displayName !== undefined) {
           const trimmedName = displayName?.trim();
-
-          fbUpdate.displayName = trimmedName || "";
+          fbUpdate.displayName = trimmedName || ""; // Firebase empty string allow করে
         }
-
         if (photoURL !== undefined) {
           const trimmedPhoto = photoURL?.trim();
-          if (trimmedPhoto && trimmedPhoto !== "") {
-            fbUpdate.photoURL = trimmedPhoto;
-          } else {
-            fbUpdate.photoURL = null;
-          }
+          fbUpdate.photoURL =
+            trimmedPhoto && trimmedPhoto !== "" ? trimmedPhoto : null;
         }
 
-        // Firebase Auth update
-        const userRecord = await admin.auth().getUserByEmail(email);
         await admin.auth().updateUser(userRecord.uid, fbUpdate);
+        console.log(
+          "Firebase Auth profile updated successfully for UID:",
+          userRecord.uid
+        );
 
+        // এখানে আপডেট হওয়া ইউজারের লেটেস্ট ডাটা MongoDB থেকে নিয়ে পাঠাবো
+        const updatedUserFromDB = await userCollection.findOne({ email });
+
+        // ফ্রন্টএন্ডে সবকিছু ক্লিয়ার করে দিচ্ছি
         res.json({
           success: true,
           message: "Profile updated successfully",
+          updatedUser: {
+            displayName: updatedUserFromDB.displayName || "",
+            photoURL: updatedUserFromDB.photoURL || null,
+            email: updatedUserFromDB.email,
+            isPremium: updatedUserFromDB.isPremium || false,
+            blocked: updatedUserFromDB.blocked || false,
+            // অন্যান্য ফিল্ড চাইলে যোগ করো
+          },
         });
       } catch (error) {
-        console.error("Profile update error:", error);
-        res.status(500).json({ success: false, message: "Server error" });
+        console.error("Profile update failed:", error);
+
+        // Firebase এরর হলে আলাদা মেসেজ
+        if (error.code?.startsWith("auth/")) {
+          return res.status(400).json({
+            success: false,
+            message: "Firebase update failed: " + error.message,
+          });
+        }
+
+        res.status(500).json({
+          success: false,
+          message: "Server error. Check console.",
+          error: error.message,
+        });
       }
     });
 
