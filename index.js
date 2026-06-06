@@ -26,7 +26,7 @@ app.use(cors());
 const verifyFBToken = async (req, res, next) => {
   const authHeader = req.headers.authorization || req.headers.Authorization;
 
-  console.log("Raw Authorization header:", authHeader); // ডিবাগ
+  console.log("Raw Authorization header:", authHeader); 
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res
@@ -34,7 +34,7 @@ const verifyFBToken = async (req, res, next) => {
       .json({ message: "No token provided or invalid format" });
   }
 
-  const idToken = authHeader.split("Bearer ")[1].trim(); // trim দিয়ে extra space সরাও
+  const idToken = authHeader.split("Bearer ")[1].trim(); 
 
   console.log(
     "Extracted token (first 30 chars):",
@@ -45,9 +45,9 @@ const verifyFBToken = async (req, res, next) => {
     const decoded = await admin.auth().verifyIdToken(idToken);
     console.log("✅ Token verified:", decoded.uid, decoded.email);
 
-    // এখানে দুইটা জিনিস সেট করো
-    req.decoded_email = decoded.email; // verifyAdmin/verifyStaff এর জন্য
-    req.user = decoded; // অন্যান্য কাজের জন্য (optional)
+   
+    req.decoded_email = decoded.email; 
+    req.user = decoded; 
 
     next();
   } catch (error) {
@@ -75,14 +75,14 @@ async function run() {
 
     const db = client.db("city-fix-db");
 
-    // IMPORTANT: issus = citizen collection
+
     const reportCollection = db.collection("issus");
 
     // users collection
     const userCollection = db.collection("users");
     const subscribeCollection = db.collection("subscribe");
 
-    //middl admin before allowing admin activity
+
 
     // Admin Verification
     const verifyAdmin = async (req, res, next) => {
@@ -214,11 +214,11 @@ async function run() {
       const email = req.decoded_email;
       const { displayName, photoURL } = req.body;
 
-      // লগ করে দেখি কী আসছে
+   
       console.log("Profile update request for:", email);
       console.log("Received data:", { displayName, photoURL });
 
-      // কিছু না পাঠালে এরর দাও
+   
       if (displayName === undefined && photoURL === undefined) {
         return res.status(400).json({
           success: false,
@@ -271,7 +271,7 @@ async function run() {
           "document updated"
         );
 
-        // Firebase Auth এ আপডেট করি
+
         const userRecord = await admin.auth().getUserByEmail(email);
 
         const fbUpdate = {};
@@ -291,10 +291,9 @@ async function run() {
           userRecord.uid
         );
 
-        // এখানে আপডেট হওয়া ইউজারের লেটেস্ট ডাটা MongoDB থেকে নিয়ে পাঠাবো
         const updatedUserFromDB = await userCollection.findOne({ email });
 
-        // ফ্রন্টএন্ডে সবকিছু ক্লিয়ার করে দিচ্ছি
+       
         res.json({
           success: true,
           message: "Profile updated successfully",
@@ -304,7 +303,7 @@ async function run() {
             email: updatedUserFromDB.email,
             isPremium: updatedUserFromDB.isPremium || false,
             blocked: updatedUserFromDB.blocked || false,
-            // অন্যান্য ফিল্ড চাইলে যোগ করো
+           
           },
         });
       } catch (error) {
@@ -427,7 +426,7 @@ async function run() {
         status: "pending",
       });
 
-      // Rejected count (ধরে নিচ্ছি তুমি rejected status যোগ করবে DB-এ)
+   
       const rejectedCount = await reportCollection.countDocuments({
         status: "rejected",
       });
@@ -509,29 +508,6 @@ async function run() {
       }
     );
 
-    // app.get("/latest-resolved", async (req, res) => {
-    //   try {
-    //     const limit = parseInt(req.query.limit) || 6;
-
-    //     const cursor = reportCollection.find({ status: "resolved" });
-    //     const count = await cursor.count();
-    //     console.log("Total resolved issues:", count);
-
-    //     const latestResolved = await cursor
-    //       .sort({ createdAt: -1 })
-    //       .limit(limit)
-    //       .toArray();
-
-    //     console.log("Fetched issues:", latestResolved.length);
-    //     res.send(latestResolved);
-    //   } catch (err) {
-    //     console.error("Latest Resolved Issues Error:", err);
-    //     res
-    //       .status(500)
-    //       .send({ message: "Failed to fetch latest resolved issues" });
-    //   }
-    // });
-
     app.patch("/issus/boost/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -579,7 +555,6 @@ async function run() {
       res.send({ success: true });
     });
 
-    // 1. Staff er kache assign kora sob issue gulo dekha
     // Staff assigned issues
     app.get(
       "/staff/assigned-issues",
@@ -712,7 +687,7 @@ async function run() {
         } catch (error) {
           console.error("Add staff error:", error);
 
-          // Firebase specific common errors
+       
           if (error.code === "auth/email-already-exists") {
             return res
               .status(400)
@@ -951,7 +926,7 @@ async function run() {
           status: "Resolved",
         });
 
-        // 3. Total payments (subscribeCollection থেকে এই ইউজারের সব payment sum)
+     
         const paymentResult = await subscribeCollection
           .aggregate([
             { $match: { email, purpose: "subscribe" } }, // শুধু subscription payment
@@ -962,7 +937,6 @@ async function run() {
         const totalPayments =
           paymentResult.length > 0 ? paymentResult[0].total : 0;
 
-        // Final response – frontend এ exactly এটা expect করছে
         res.json({
           total,
           pending,
@@ -1076,8 +1050,8 @@ async function run() {
           email,
           name,
           amount,
-          isPremium: false, // <-- default
-          createdAt: new Date(), // optional but useful
+          isPremium: false, 
+          createdAt: new Date(),
         };
 
         const result = await subscribeCollection.insertOne(subscribeData);
@@ -1159,80 +1133,6 @@ async function run() {
         res.status(500).json({ error: err.message });
       }
     });
-    // app.patch("/payment-success", async (req, res) => {
-    //   try {
-    //     const { sessionId } = req.body;
-    //    console.log('this is session id',sessionId)
-    //     const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    //     if (session.payment_status !== "paid") {
-    //       return res
-    //         .status(400)
-    //         .send({ success: false, message: "Payment not completed" });
-    //     }
-
-    //     const purpose = session.metadata.purpose;
-
-    //     //boost
-    //     if (purpose === "boost") {
-    //       const issueId = session.metadata.issueId;
-    //       console.log(issueId)
-
-    //       await reportCollection.updateOne(
-    //         { _id: (issueId) },
-    //         {
-    //           $set: { priority: "High" },
-    //           $push: {
-    //             timeline: {
-    //               text: "Priority boosted (100 BDT payment)",
-    //               date: new Date(),
-    //             },
-    //           },
-    //         }
-    //       );
-
-    //       return res.send({
-    //         success: true,
-    //         purpose: "boost",
-    //         issueId,
-    //       });
-    //     }
-
-    //     //subscribe
-
-    //     if (purpose === "subscribe") {
-    //       await userCollection.updateOne(
-    //         { email: session.customer_details.email },
-    //         {
-    //           $set: {
-    //             isPremium: true,
-    //             premiumDate: new Date(),
-    //           },
-    //         }
-    //       );
-
-    //       await subscribeCollection.insertOne({
-    //         transactionId: session.payment_intent,
-    //         email: session.customer_details.email,
-    //         amount_usd: session.amount_total / 100,
-    //         amount_bdt: session.metadata.amount_bdt,
-    //         plan: session.metadata.plan,
-    //         status: "completed",
-    //         createdAt: new Date(),
-    //       });
-
-    //       return res.send({
-    //         success: true,
-    //         purpose: "subscribe",
-    //       });
-    //     }
-
-    //     res.status(400).send({ message: "Unknown payment purpose" });
-    //   } catch (err) {
-    //     console.error(err);
-    //     res.status(500).send({ error: err.message });
-    //   }
-    // });
 
     app.post("/payment-success", async (req, res) => {
       try {
