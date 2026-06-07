@@ -5,6 +5,7 @@ require("dotenv").config();
 const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const { Profiler } = require("react");
+const { generateDescription } = require("./services/geminiService");
 
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf8"
@@ -26,7 +27,7 @@ app.use(cors());
 const verifyFBToken = async (req, res, next) => {
   const authHeader = req.headers.authorization || req.headers.Authorization;
 
-  console.log("Raw Authorization header:", authHeader); 
+  console.log("Raw Authorization header:", authHeader);
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res
@@ -34,7 +35,7 @@ const verifyFBToken = async (req, res, next) => {
       .json({ message: "No token provided or invalid format" });
   }
 
-  const idToken = authHeader.split("Bearer ")[1].trim(); 
+  const idToken = authHeader.split("Bearer ")[1].trim();
 
   console.log(
     "Extracted token (first 30 chars):",
@@ -45,9 +46,9 @@ const verifyFBToken = async (req, res, next) => {
     const decoded = await admin.auth().verifyIdToken(idToken);
     console.log("✅ Token verified:", decoded.uid, decoded.email);
 
-   
-    req.decoded_email = decoded.email; 
-    req.user = decoded; 
+
+    req.decoded_email = decoded.email;
+    req.user = decoded;
 
     next();
   } catch (error) {
@@ -214,11 +215,11 @@ async function run() {
       const email = req.decoded_email;
       const { displayName, photoURL } = req.body;
 
-   
+
       console.log("Profile update request for:", email);
       console.log("Received data:", { displayName, photoURL });
 
-   
+
       if (displayName === undefined && photoURL === undefined) {
         return res.status(400).json({
           success: false,
@@ -293,7 +294,7 @@ async function run() {
 
         const updatedUserFromDB = await userCollection.findOne({ email });
 
-       
+
         res.json({
           success: true,
           message: "Profile updated successfully",
@@ -303,7 +304,7 @@ async function run() {
             email: updatedUserFromDB.email,
             isPremium: updatedUserFromDB.isPremium || false,
             blocked: updatedUserFromDB.blocked || false,
-           
+
           },
         });
       } catch (error) {
@@ -426,7 +427,7 @@ async function run() {
         status: "pending",
       });
 
-   
+
       const rejectedCount = await reportCollection.countDocuments({
         status: "rejected",
       });
@@ -687,7 +688,7 @@ async function run() {
         } catch (error) {
           console.error("Add staff error:", error);
 
-       
+
           if (error.code === "auth/email-already-exists") {
             return res
               .status(400)
@@ -799,9 +800,8 @@ async function run() {
               $set: { assignedStaffEmail: staffEmail },
               $push: {
                 timeline: {
-                  text: `Assigned to staff: ${
-                    staffUser.displayName || staffEmail
-                  }`,
+                  text: `Assigned to staff: ${staffUser.displayName || staffEmail
+                    }`,
                   date: new Date(),
                   updatedBy: req.decoded_email, // admin who assigned
                 },
@@ -926,7 +926,7 @@ async function run() {
           status: "Resolved",
         });
 
-     
+
         const paymentResult = await subscribeCollection
           .aggregate([
             { $match: { email, purpose: "subscribe" } }, // শুধু subscription payment
@@ -1050,7 +1050,7 @@ async function run() {
           email,
           name,
           amount,
-          isPremium: false, 
+          isPremium: false,
           createdAt: new Date(),
         };
 
@@ -1078,6 +1078,48 @@ async function run() {
 
       const result = await userCollection.updateOne(filter, updateDoc);
       res.send(result);
+    });
+
+    //generate descripton on AI
+    app.post("/generate-description", async (req, res) => {
+      try {
+        const { title, category, location } = req.body;
+
+        if (!title || !category || !location) {
+          return res.status(400).json({
+            success: false,
+            message: "title, category, and location are required",
+          });
+        }
+
+        const trimmedTitle = String(title).trim();
+        const trimmedCategory = String(category).trim();
+        const trimmedLocation = String(location).trim();
+
+        if (!trimmedTitle || !trimmedCategory || !trimmedLocation) {
+          return res.status(400).json({
+            success: false,
+            message: "title, category, and location must not be empty",
+          });
+        }
+
+        const description = await generateDescription({
+          title: trimmedTitle,
+          category: trimmedCategory,
+          location: trimmedLocation,
+        });
+
+        res.json({
+          success: true,
+          description,
+        });
+      } catch (error) {
+        console.error("Gemini description generation error:", error.message);
+        res.status(500).json({
+          success: false,
+          message: "Failed to generate description",
+        });
+      }
     });
 
     // Stripe checkout
@@ -1225,6 +1267,7 @@ run().catch(console.dir);
 app.get("/", (req, res) => {
   res.send("City Fix Backend Running!");
 });
+
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
