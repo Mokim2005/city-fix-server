@@ -30,7 +30,11 @@ Return only the description text.
       contents: prompt,
     });
 
-    return response.text;
+    const description = response.text;
+    if (!description) {
+      throw new Error("Empty or blocked response from Gemini");
+    }
+    return description.trim();
   } catch (error) {
     console.error("🔥 FULL GEMINI ERROR:", error);
     throw new Error("Failed to generate description");
